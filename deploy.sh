@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# Deployment script for Joseph Machine Voice Visit Tracker
+
+echo "======================================"
+echo " Joseph Machine Voice Visit Tracker"
+echo " Deployment Script"
+echo "======================================"
+echo ""
+
+echo "This app can be deployed to several platforms:"
+echo ""
+echo "1. LOCAL TESTING:"
+echo "   python server.py"
+echo "   Then open http://localhost:5000"
+echo ""
+echo "2. RENDER (Recommended - Free):"
+echo "   - Go to https://render.com"
+echo "   - Connect your GitHub repo"
+echo "   - Create new Web Service"
+echo "   - Build command: pip install -r requirements.txt"
+echo "   - Start command: python server.py"
+echo ""
+echo "3. RAILWAY (Free):"
+echo "   - Go to https://railway.app"
+echo "   - Connect repo"
+echo "   - Deploy automatically"
+echo ""
+echo "4. FLY.IO (Free tier):"
+echo "   - Install flyctl"
+echo "   - Run: fly launch"
+echo ""
+echo "5. PYTHONANYWHERE (Free):"
+echo "   - Sign up at pythonanywhere.com"
+echo "   - Upload files"
+echo "   - Configure WSGI"
+echo ""
+echo "======================================"
+echo " Starting local server..."
+echo "======================================"
+echo ""
+
+python server.py
