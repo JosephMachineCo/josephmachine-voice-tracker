@@ -11,7 +11,6 @@ import hashlib
 import secrets
 import os
 from datetime import datetime, timedelta
-import json
 
 app = Flask(__name__, static_folder='.')
 CORS(app)
@@ -62,6 +61,7 @@ def init_db():
 
     conn.commit()
     conn.close()
+    print("Database initialized successfully")
 
 def hash_password(password):
     """Simple password hashing"""
@@ -252,7 +252,7 @@ def get_visits():
 
 @app.route('/api/visits/all', methods=['GET'])
 def get_all_visits():
-    """Get all visits (for managers/admins) - requires admin token"""
+    """Get all visits (for managers/admins)"""
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
     user_id = verify_token(token)
 
@@ -275,7 +275,14 @@ def get_all_visits():
 
     return jsonify(visits)
 
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy'}), 200
+
 if __name__ == '__main__':
+    print("Starting Joseph Machine Voice Visit Tracker...")
     init_db()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    port = int(os.environ.get('PORT', 10000))
+    print(f"Server starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
