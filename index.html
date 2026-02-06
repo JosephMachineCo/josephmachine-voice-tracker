@@ -339,6 +339,28 @@
             font-style: italic;
         }
 
+        .polishing-indicator {
+            background: #FEF3C7;
+            border: 1px solid #FDE047;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+            text-align: center;
+            font-size: 14px;
+            color: #92400E;
+        }
+
+        .polishing-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(146, 64, 14, 0.3);
+            border-radius: 50%;
+            border-top-color: #92400E;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+        }
+
         .action-buttons {
             display: flex;
             gap: 12px;
@@ -504,9 +526,6 @@
 
         // API configuration
         const API_URL = window.location.origin;
-
-        // Joseph Machine logo as base64 data URI
-        const LOGO_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAlgAAABkCAYAAABaJ8GBAAAACXBIWXMAAAsTAAALEwEAmpwYAAAKT2lDQ1BQaG90b3Nob3AgSUNDIHByb2ZpbGUAAHjanVNnVFPpFj333vRCS4iAlEtvUhUIIFJCi4AUkSYqIQkQSogMABBAAEBKBQIIQQARAQAIBEIBAAAAAEAKBAIAQQAEBQQgBQIAAgEg...";
 
         // Voice questions flow
         const QUESTIONS = [
@@ -733,6 +752,7 @@
             const [transcript, setTranscript] = useState('');
             const [isListening, setIsListening] = useState(false);
             const [isSpeaking, setIsSpeaking] = useState(false);
+            const [isPolishing, setIsPolishing] = useState(false);
             const [status, setStatus] = useState('');
             const [error, setError] = useState('');
             const [success, setSuccess] = useState('');
@@ -740,7 +760,9 @@
             const [locationData, setLocationData] = useState(null);
 
             const recognitionRef = useRef(null);
-            const synthRef = useRef(window.speechSynthesis);
+            const audioContextRef = useRef(null);
+            const audioQueue = useRef([]);
+            const isPlayingRef = useRef(false);
 
             useEffect(() => {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -782,6 +804,9 @@
                     setError('Speech recognition is not supported in your browser. Please use Chrome or Edge.');
                 }
 
+                // Initialize Web Audio API
+                audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(
                         (position) => {
@@ -801,21 +826,45 @@
                     if (recognitionRef.current) {
                         recognitionRef.current.stop();
                     }
-                    synthRef.current.cancel();
+                    if (audioContextRef.current) {
+                        audioContextRef.current.close();
+                    }
                 };
             }, []);
 
-            const speak = (text) => {
-                synthRef.current.cancel();
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.rate = 1.0;
-                utterance.pitch = 1.0;
-                utterance.volume = 1.0;
+            const speak = async (text) => {
+                setIsSpeaking(true);
+                try {
+                    const response = await fetch(`${API_URL}/api/synthesize`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ text })
+                    });
 
-                utterance.onstart = () => setIsSpeaking(true);
-                utterance.onend = () => setIsSpeaking(false);
+                    if (!response.ok) {
+                        throw new Error('TTS failed');
+                    }
 
-                synthRef.current.speak(utterance);
+                    const audioBlob = await response.blob();
+                    const arrayBuffer = await audioBlob.arrayBuffer();
+                    const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
+
+                    const source = audioContextRef.current.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioContextRef.current.destination);
+
+                    source.onended = () => {
+                        setIsSpeaking(false);
+                    };
+
+                    source.start(0);
+                } catch (err) {
+                    console.error('Speech synthesis error:', err);
+                    setIsSpeaking(false);
+                }
             };
 
             const startListening = () => {
@@ -843,7 +892,7 @@
                 setStatus('');
             };
 
-            const handleDoneAnswer = () => {
+            const handleDoneAnswer = async () => {
                 if (!transcript.trim()) {
                     setError('Please record an answer first');
                     setTimeout(() => setError(''), 3000);
@@ -851,29 +900,66 @@
                 }
 
                 stopListening();
+                setIsPolishing(true);
 
-                const currentQuestion = QUESTIONS[currentStep];
-                const newAnswers = {
-                    ...answers,
-                    [currentQuestion.field]: transcript.trim()
-                };
-                setAnswers(newAnswers);
+                try {
+                    // Polish the answer using GPT-4o-mini
+                    const currentQuestion = QUESTIONS[currentStep];
+                    const polishResponse = await fetch(`${API_URL}/api/polish`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({
+                            raw_text: transcript.trim(),
+                            question: currentQuestion.text
+                        })
+                    });
 
-                speak('Answer recorded. Moving to the next question.');
-
-                setTimeout(() => {
-                    if (currentStep < QUESTIONS.length - 1) {
-                        setCurrentStep(currentStep + 1);
-                        setTranscript('');
-                        setError('');
-                        setTimeout(() => {
-                            speak(QUESTIONS[currentStep + 1].text);
-                        }, 500);
-                    } else {
-                        setShowSummary(true);
-                        speak('All questions answered. Please review your visit summary.');
+                    if (!polishResponse.ok) {
+                        throw new Error('Failed to polish answer');
                     }
-                }, 1000);
+
+                    const polishData = await polishResponse.json();
+                    const polishedAnswer = polishData.polished_text;
+
+                    // Store the polished answer
+                    const newAnswers = {
+                        ...answers,
+                        [currentQuestion.field]: polishedAnswer
+                    };
+                    setAnswers(newAnswers);
+
+                    setIsPolishing(false);
+                    speak('Answer recorded. Moving to the next question.');
+
+                    setTimeout(() => {
+                        if (currentStep < QUESTIONS.length - 1) {
+                            setCurrentStep(currentStep + 1);
+                            setTranscript('');
+                            setError('');
+                            setTimeout(() => {
+                                speak(QUESTIONS[currentStep + 1].text);
+                            }, 500);
+                        } else {
+                            setShowSummary(true);
+                            speak('All questions answered. Please review your visit summary.');
+                        }
+                    }, 1000);
+                } catch (err) {
+                    console.error('Polishing error:', err);
+                    setIsPolishing(false);
+                    setError('Failed to polish answer. Using original transcript.');
+
+                    // Fall back to raw transcript
+                    const currentQuestion = QUESTIONS[currentStep];
+                    const newAnswers = {
+                        ...answers,
+                        [currentQuestion.field]: transcript.trim()
+                    };
+                    setAnswers(newAnswers);
+                }
             };
 
             const handleRerecord = () => {
@@ -1017,6 +1103,7 @@
                             <button
                                 className={`mic-button ${isListening ? 'listening' : ''}`}
                                 onClick={isListening ? stopListening : startListening}
+                                disabled={isPolishing}
                             >
                                 <span className="mic-icon">
                                     {isListening ? '⏸️' : '🎤'}
@@ -1026,6 +1113,13 @@
                             <div className="status-text">
                                 {isListening ? '🔴 Recording... Tap to pause' : 'Tap the mic to speak'}
                             </div>
+
+                            {isPolishing && (
+                                <div className="polishing-indicator">
+                                    <span className="polishing-spinner"></span>
+                                    Polishing your answer with AI...
+                                </div>
+                            )}
 
                             <div className="transcript-box">
                                 <div className="transcript-label">Your Answer</div>
@@ -1038,13 +1132,13 @@
                                 <button
                                     className="secondary-btn"
                                     onClick={handleRerecord}
-                                    disabled={!transcript}
+                                    disabled={!transcript || isPolishing}
                                 >
                                     🔄 Re-record
                                 </button>
                                 <button
                                     onClick={handleDoneAnswer}
-                                    disabled={!transcript.trim()}
+                                    disabled={!transcript.trim() || isPolishing}
                                 >
                                     ✓ Done with Answer
                                 </button>

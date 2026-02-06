@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Sales Visit Tracking App - Backend Server
-A Flask-based API for managing sales rep visits with authentication
+Sales Visit Tracking App - Backend Server with AI Voice & Polishing
+A Flask-based API for managing sales rep visits with authentication, OpenAI TTS, and GPT-4o-mini polishing
 """
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 import sqlite3
 import hashlib
 import secrets
 import os
 from datetime import datetime, timedelta
+import json
+from openai import OpenAI
 
 app = Flask(__name__, static_folder='.')
 CORS(app)
@@ -18,6 +20,10 @@ CORS(app)
 # Database setup
 DB_PATH = 'sales_visits.db'
 SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+
+# Initialize OpenAI client
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 def init_db():
     """Initialize database with required tables"""
@@ -80,6 +86,27 @@ def verify_token(token):
     result = c.fetchone()
     conn.close()
     return result[0] if result else None
+
+def polish_answer(raw_text, question):
+    """Use GPT-4o-mini to clean up and polish the voice transcript"""
+    if not client:
+        return raw_text  # Return original if no API key
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a professional assistant helping clean up voice transcripts from sales call notes. Fix typos, improve grammar, make it professional and clear, but keep the original meaning and content. Keep it concise."},
+                {"role": "user", "content": f"Question: {question}\n\nRaw voice transcript: {raw_text}\n\nPlease clean this up to be professional and error-free:"}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        polished = response.choices[0].message.content.strip()
+        return polished
+    except Exception as e:
+        print(f"Error polishing text: {e}")
+        return raw_text  # Fallback to original
 
 @app.route('/')
 def index():
@@ -189,6 +216,64 @@ def get_profile():
         'full_name': result[2]
     })
 
+@app.route('/api/polish', methods=['POST'])
+def polish_text():
+    """Polish a voice transcript using GPT-4o-mini"""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    user_id = verify_token(token)
+
+    if not user_id:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.json
+    raw_text = data.get('text', '')
+    question = data.get('question', '')
+
+    if not raw_text:
+        return jsonify({'error': 'Text is required'}), 400
+
+    polished = polish_answer(raw_text, question)
+
+    return jsonify({
+        'original': raw_text,
+        'polished': polished
+    })
+
+@app.route('/api/synthesize', methods=['POST'])
+def synthesize_speech():
+    """Generate natural speech using OpenAI TTS"""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    user_id = verify_token(token)
+
+    if not user_id:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if not client:
+        return jsonify({'error': 'OpenAI API key not configured'}), 500
+
+    data = request.json
+    text = data.get('text', '')
+
+    if not text:
+        return jsonify({'error': 'Text is required'}), 400
+
+    try:
+        response = client.audio.speech.create(
+            model="tts-1",
+            voice="alloy",  # Natural, neutral voice
+            input=text
+        )
+
+        # Stream the audio response
+        def generate():
+            for chunk in response.iter_bytes(chunk_size=4096):
+                yield chunk
+
+        return Response(generate(), mimetype='audio/mpeg')
+    except Exception as e:
+        print(f"Error generating speech: {e}")
+        return jsonify({'error': 'Failed to generate speech'}), 500
+
 @app.route('/api/visits', methods=['POST'])
 def submit_visit():
     """Submit a new customer visit"""
@@ -278,10 +363,12 @@ def get_all_visits():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy'}), 200
+    return jsonify({'status': 'healthy', 'openai_configured': client is not None}), 200
 
 if __name__ == '__main__':
-    print("Starting Joseph Machine Voice Visit Tracker...")
+    print("Starting Joseph Machine Voice Visit Tracker with AI...")
+    if not OPENAI_API_KEY:
+        print("WARNING: OPENAI_API_KEY not set. AI features will be disabled.")
     init_db()
     port = int(os.environ.get('PORT', 10000))
     print(f"Server starting on port {port}")
